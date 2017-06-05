@@ -32,7 +32,9 @@ const eof = -1
 const (
 	br             delim = "\r\n"
 	hardBr               = "  " + br
-	ul                   = "*"
+	ul0 = "-"
+	ul1 = "+"
+	ul2 = "*"
 	ol                   = "1."
 	atxHeader            = "#"
 	setTextHeader1       = "="
@@ -66,7 +68,7 @@ func (i item) String() string {
 	case i.typ == itemParagraphContinued:
 		return fmt.Sprintf("Continued: %q", i.val)
 	case i.typ >= itemH1 && i.typ < itemH6:
-		return fmt.Sprintf("Header H%v: %q", i.typ - itemH1 + 1, i.val)
+		return fmt.Sprintf("Header H%v: %q", i.typ-itemH1+1, i.val)
 		// case len(i.val) > 10:
 		// 	return fmt.Sprintf("%.10q...", i.val)
 	}
@@ -82,6 +84,7 @@ type lexer struct {
 	items chan item
 }
 
+// run starts the lexing process
 func (l *lexer) run() {
 	for state := lexBlock; state != nil; {
 		state = state(l)
@@ -89,11 +92,13 @@ func (l *lexer) run() {
 	close(l.items)
 }
 
+// emit sends an item out on the items channel and resets pos & start
 func (l *lexer) emit(t itemType) {
 	l.items <- item{t, l.input[l.start:l.pos]}
 	l.start = l.pos
 }
 
+// next returns the next rune in the input string and moves pos forward
 func (l *lexer) next() rune {
 	if l.pos >= len(l.input) {
 		l.width = 0
@@ -105,6 +110,7 @@ func (l *lexer) next() rune {
 	return r
 }
 
+// nextNTimes runs next n times
 func (l *lexer) nextNTimes(n int) []rune {
 	res := make([]rune, n)
 	for i := 0; i < n; i++ {
@@ -113,28 +119,43 @@ func (l *lexer) nextNTimes(n int) []rune {
 	return res
 }
 
+// ignore skips over the substr between l.start & l.pos
 func (l *lexer) ignore() {
 	l.start = l.pos
 }
 
+// ignoreNext ignores the next n runes
 func (l *lexer) ignoreNext(n int) {
 	l.nextNTimes(n)
 	l.ignore()
 }
 
+// ignoreRun ignores all the following successive occurrences of r
+func (l *lexer) ignoreRun(r rune) {
+	for l.accept(string(r)) {
+	}
+	l.ignore()
+}
+
+// backup moves the pos cursor one step back
+// WARNING: only safe to run once in between runs of next()
 func (l *lexer) backup() {
 	l.pos -= l.width
 }
 
+// backupNSpaces backs up n times
+// WARNING: only safe to run when you are certain the previous n characters are identical
 func (l *lexer) backupNSpaces(n int) {
 	l.pos -= n * l.width
 }
 
+// peek returns the next rune without altering the state of the lexer
 func (l *lexer) peek() rune {
 	defer l.backup()
 	return l.next()
 }
 
+// accept absorbs one rune from the valid string into the current item
 func (l *lexer) accept(valid string) bool {
 	if strings.IndexRune(valid, l.next()) >= 0 {
 		return true
@@ -143,19 +164,7 @@ func (l *lexer) accept(valid string) bool {
 	return false
 }
 
-func (l *lexer) acceptWhole(valid string) bool {
-	for i := 0; i < len(valid); i++ {
-		if m := strings.IndexRune(valid, l.next()); m != i {
-			fmt.Printf("Index of %q in %q: %v\n", l.peek(), valid, m)
-			for j := 0; j <= i; j++ {
-				l.backup()
-				return false
-			}
-		}
-	}
-	return true
-}
-
+// acceptRun accepts successive characters as long as they are in the valid string
 func (l *lexer) acceptRun(valid string) int {
 	n := 0
 	for strings.IndexRune(valid, rune(l.next())) >= 0 {
@@ -165,6 +174,10 @@ func (l *lexer) acceptRun(valid string) int {
 	return n
 }
 
+func (l *lexer) acceptUntilNewLine() {
+	for ; !hp(l.input[l.pos:], br); l.next() { }
+}
+
 // errorf returns an error token and terminates the scan by passing
 // back a nil pointer that will be the next state, terminating l.nextItem.
 func (l *lexer) errorf(format string, args ...interface{}) stateFn {
@@ -172,6 +185,8 @@ func (l *lexer) errorf(format string, args ...interface{}) stateFn {
 	return nil
 }
 
+// lex provisions the whole lexing scheme and passes back references
+// to the lexer instance and items channel
 func lex(name, input string) (*lexer, chan item) {
 	l := &lexer{
 		name:  name,
@@ -184,7 +199,7 @@ func lex(name, input string) (*lexer, chan item) {
 
 type stateFn func(*lexer) stateFn
 
-// hp is a shorthand for strings.HasPrefix that accepts a delim string type
+// hp is a shorthand for strings.HasPrefix that accepts a delim param
 func hp(s string, d delim) bool {
 	return strings.HasPrefix(s, string(d))
 }
@@ -207,22 +222,21 @@ func isAlphaNumeric(r rune) bool {
 // ============================================================ //
 // ========================= STATES =========================== //
 // ============================================================ //
-func lexText(l *lexer) stateFn {
-	for {
-
-	}
-}
 
 func lexBlock(l *lexer) stateFn {
 	for {
 		s := l.input[l.pos:]
 		if hp(s, hardBr) {
-			l.accept(string(hardBr))
+			l.nextNTimes(len(hardBr))
 			l.emit(itemHardNewLine)
+		} else if hp(s, ul0) || hp(s, ul1) || hp(s, ul2) {
+				fmt.Println("entering lex ul...")
+				return lexUl
 		} else if isAlphaNumeric(rune(l.peek())) {
 			fmt.Println("entering lex paragraph...")
 			return lexNewParagraph
 		} else if hp(s, atxHeader) {
+			fmt.Println("entering lex atx header...")
 			return lexAtxHeader
 		} else if l.pos > len(l.input) {
 			break
@@ -255,9 +269,9 @@ func lexParagraph(l *lexer, typ itemType) stateFn {
 		n := l.acceptRun(inlineChars)
 		if n == 0 { // No more characters to absorb (might be unnecessary)
 			if hp(l.input[l.pos-2:], hardBr) {
-				l.emit(typ)           // Emit either para or continued para
-				l.nextNTimes(len(br)) // Absorb the newline
-				l.emit(itemHardNewLine)   // Emit hard new line, now pos is at beginning of next line
+				l.emit(typ)             // Emit either para or continued para
+				l.nextNTimes(len(br))   // Absorb the newline
+				l.emit(itemHardNewLine) // Emit hard new line, now pos is at beginning of next line
 				l.acceptRun(" ")
 				l.ignore() // Ignore leading spaces
 				if l.accept(string(setTextHeader1)) || l.accept(string(setTextHeader2)) {
@@ -282,8 +296,10 @@ func lexParagraph(l *lexer, typ itemType) stateFn {
 					l.nextNTimes(len(br))
 					l.ignore()
 					return lexBlock
-				} else if (isAlphaNumeric(l.peek())) {
+				} else if isAlphaNumeric(l.peek()) {
 					continue
+				} else {
+					return lexBlock
 				}
 			}
 		}
@@ -298,30 +314,30 @@ func lexSetTextHeader(l *lexer) stateFn {
 func lexAtxHeader(l *lexer) stateFn {
 	var typ itemType
 	n := l.acceptRun("#") // Find which level of header this is
-	if (l.peek() != ' ') {
+	if l.peek() != ' ' {
 		return lexNewParagraph
 	}
 	l.ignoreNext(1)
-	switch n {	// Map to item type
-		case 1:
-			typ = itemH1
-		case 2:
-			typ = itemH2
-		case 3:
-			typ = itemH3
-		case 4:
-			typ = itemH4
-		case 5:
-			typ = itemH5
-		case 6:
-			typ = itemH6
-		case 0:
-			typ = itemError
-		default:
-			typ = itemH6
+	switch n { // Map to item type
+	case 1:
+		typ = itemH1
+	case 2:
+		typ = itemH2
+	case 3:
+		typ = itemH3
+	case 4:
+		typ = itemH4
+	case 5:
+		typ = itemH5
+	case 6:
+		typ = itemH6
+	case 0:
+		typ = itemError
+	default:
+		typ = itemH6
 	}
 	if typ == itemError {
-		return l.errorf("Expected \"#\" at start of ATX header")	// Send error & exit
+		return l.errorf("Expected \"#\" at start of ATX header") // Send error & exit
 	}
 	l.ignore()
 	l.acceptRun(inlineChars)
@@ -335,42 +351,18 @@ func lexAtxHeader(l *lexer) stateFn {
 }
 
 func lexUl(l *lexer) stateFn {
-	return nil
+	fmt.Println(string(l.next()))
+	if l.peek() != ' ' {
+		return lexNewParagraph
+	}
+	for !hp(l.input[l.pos:], br) && l.peek() != eof {
+		l.next()
+	}
+	l.emit(itemUl)
+	l.nextNTimes(len(br))
+	l.ignore()
+	return lexBlock
 }
-
-// func lexInline(l *lexer) stateFn {
-// 	for {
-// 		s := l.input[l.pos:]
-// 		if hp(s, hardBr) {
-// 			l.emit(itemText)
-// 			return lexNewLine
-// 		} else if hp(s, ul) {
-
-// 		} else if hp(s, ol) {
-
-// 		} else if hp(s, link) {
-
-// 		} else if hp(s, img) {
-
-// 		}
-// 		if l.next() == eof {
-// 			break
-// 		}
-// 	}
-// 	if l.pos > l.start {
-// 		l.emit(itemText)
-// 	}
-// 	l.emit(itemEOF)
-// 	return nil
-// }
-
-// func lexNewLine(l *lexer) stateFn {
-// 	l.acceptRun(" ")
-// }
-
-// func lexUl(l *lexer) stateFn {
-
-// }
 // ============================================================ //
 // ======================= END STATES ========================= //
 // ============================================================ //

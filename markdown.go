@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	// "fmt"
 	"io/ioutil"
 
 	"./parser"
@@ -9,6 +9,6 @@ import (
 
 func main() {
 	f, _ := ioutil.ReadFile("test.md")
-	m := parser.Lex("test", string(f))
-	fmt.Println(m)
+	parser.Lex("test", string(f))
+	// fmt.Println(m)
 }
