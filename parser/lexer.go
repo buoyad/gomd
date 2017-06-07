@@ -2,19 +2,20 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	itemParagraph          itemType = iota // New paragraph
-	itemParagraphContinued                 // Paragraph continued after a new line
+	itemText          itemType = iota // Line of text
 	itemBlockQuote
 	itemUl
 	itemOl
 	itemCode
 	itemHr
+	itemSetTextHeader
 	itemH1
 	itemH2
 	itemH3
@@ -35,6 +36,8 @@ const (
 	ul0 = "-"
 	ul1 = "+"
 	ul2 = "*"
+	hr1 = "*"
+	hr2 = "-"
 	ol                   = "1."
 	atxHeader            = "#"
 	setTextHeader1       = "="
@@ -63,12 +66,12 @@ func (i item) String() string {
 		return "Hard return"
 	case i.typ == itemNewLine:
 		return "Soft return"
-	case i.typ == itemParagraph:
-		return fmt.Sprintf("New paragraph: %q", i.val)
-	case i.typ == itemParagraphContinued:
-		return fmt.Sprintf("Continued: %q", i.val)
+	case i.typ == itemText:
+		return fmt.Sprintf("Text: %q", i.val)
+	case i.typ == itemUl:
+		return "UL Item: " + i.val
 	case i.typ >= itemH1 && i.typ < itemH6:
-		return fmt.Sprintf("Header H%v: %q", i.typ-itemH1+1, i.val)
+		return fmt.Sprintf("Header H%v", i.typ-itemH1+1)
 		// case len(i.val) > 10:
 		// 	return fmt.Sprintf("%.10q...", i.val)
 	}
@@ -86,7 +89,7 @@ type lexer struct {
 
 // run starts the lexing process
 func (l *lexer) run() {
-	for state := lexBlock; state != nil; {
+	for state := lexText; state != nil; {
 		state = state(l)
 	}
 	close(l.items)
@@ -175,7 +178,7 @@ func (l *lexer) acceptRun(valid string) int {
 }
 
 func (l *lexer) acceptUntilNewLine() {
-	for ; !hp(l.input[l.pos:], br); l.next() { }
+	for ; (!hp(l.input[l.pos:], br) && l.peek() != eof); l.next() { }
 }
 
 // errorf returns an error token and terminates the scan by passing
@@ -223,86 +226,64 @@ func isAlphaNumeric(r rune) bool {
 // ========================= STATES =========================== //
 // ============================================================ //
 
-func lexBlock(l *lexer) stateFn {
-	for {
-		s := l.input[l.pos:]
-		if hp(s, hardBr) {
-			l.nextNTimes(len(hardBr))
-			l.emit(itemHardNewLine)
-		} else if hp(s, ul0) || hp(s, ul1) || hp(s, ul2) {
-				fmt.Println("entering lex ul...")
-				return lexUl
-		} else if isAlphaNumeric(rune(l.peek())) {
-			fmt.Println("entering lex paragraph...")
-			return lexNewParagraph
-		} else if hp(s, atxHeader) {
-			fmt.Println("entering lex atx header...")
-			return lexAtxHeader
-		} else if l.pos > len(l.input) {
-			break
+func lexText(l *lexer) stateFn {
+	/* What are we looking at right now? */
+	s := l.input[l.pos:]
+	if hp(s, atxHeader) {
+		return lexAtxHeader
+	} else if hp(s, ul0) || hp(s, ul2) {
+		return lexHr
+	} else if hp(s, ul1) && s[1] == ' ' {
+		l.acceptRun(" " + string(ul1))
+		return lexUl
+	} else if hp(s, ol) && s[2] == ' ' {
+		return lexOl
+	}
+	l.acceptUntilNewLine()
+	lexTextNewLine(l)
+	// Cursor now immediately after newline
+	/* What were we just looking at? */
+	l.acceptRun(" ") // Ignore leading spaces
+	s = l.input[l.pos:] // Start checking line contents
+	if hp(s, setTextHeader1) || hp(s, setTextHeader2) { // Previous line was setTextheader
+		l.acceptRun(string(setTextHeader1) + string(setTextHeader2) + " ") // Accept all ='s, -'s and trailing spaces
+		if !hp(l.input[l.pos:], br) {	// settext header stuff has trailing chars
+			l.acceptUntilNewLine()
+			lexTextNewLine(l)
+			return lexText
 		}
+		// valid settext header declaration
+		l.emit(itemSetTextHeader)
+		l.nextNTimes(len(br))
+		l.ignore()
+		l.emit(itemNewLine)
 	}
-	if l.pos > l.start {
-		l.emit(itemParagraph)
+	return lexText
+}
+
+// lexTextNewLine lexes the newline at the end of text, emitting the correct line ending type
+// cursor should be directly before "\r\n" when called
+// cursor is moved to the start of the next line
+func lexTextNewLine(l *lexer) {
+	if (l.pos + len(br)) > len(l.input) {
+		l.emit(itemEOF)
+		os.Exit(0)
 	}
-	l.emit(itemEOF)
-	return nil
-}
-
-func lexNewParagraph(l *lexer) stateFn {
-	return lexParagraph(l, itemParagraph)
-}
-
-func lexParagraphContinued(l *lexer) stateFn {
-	return lexParagraph(l, itemParagraphContinued)
-}
-
-func lg(s ...string) {
-	// fmt.Println(s)
-}
-
-func lexParagraph(l *lexer, typ itemType) stateFn {
-	if l.accept(string(setTextHeader1)) || l.accept(string(setTextHeader2)) {
-		return lexSetTextHeader // They are trying to
-	}
-	for {
-		n := l.acceptRun(inlineChars)
-		if n == 0 { // No more characters to absorb (might be unnecessary)
-			if hp(l.input[l.pos-2:], hardBr) {
-				l.emit(typ)             // Emit either para or continued para
-				l.nextNTimes(len(br))   // Absorb the newline
-				l.emit(itemHardNewLine) // Emit hard new line, now pos is at beginning of next line
-				l.acceptRun(" ")
-				l.ignore() // Ignore leading spaces
-				if l.accept(string(setTextHeader1)) || l.accept(string(setTextHeader2)) {
-					lg("Matched setTextHeaders")
-					l.backup() // Reset for next state
-					return lexSetTextHeader
-				} else if l.accept(string(br)) {
-					lg("Matched second newLine")
-					return lexBlock // Another newline triggers a new block
-				} else if isAlphaNumeric(l.peek()) {
-					lg("Matched continued para with:", string(l.peek()))
-					return lexParagraphContinued // Means this is a hard break within the same paragraph
-				}
-			} else if hp(l.input[l.pos:], br) {
-				// fmt.Printf("Found soft new line with following char: %q\n", l.peek())
-				l.emit(typ)
-				l.nextNTimes(len(br))
-				l.emit(itemNewLine)
-				l.acceptRun(" ")
-				if hp(l.input[l.pos:], br) {
-					l.emit(typ)
-					l.nextNTimes(len(br))
-					l.ignore()
-					return lexBlock
-				} else if isAlphaNumeric(l.peek()) {
-					continue
-				} else {
-					return lexBlock
-				}
-			}
+	if l.input[l.pos - 2:l.pos + len(br)] == string(hardBr) {
+		l.backupNSpaces(2)
+		if (l.pos > l.start) {
+			l.emit(itemText)
 		}
+		l.nextNTimes(len(hardBr))
+		l.ignore()	// Ignore literal \r\n chars
+		l.emit(itemHardNewLine)
+	} else {
+		if l.pos > l.start {
+			l.emit(itemText)
+		}
+		l.nextNTimes(len(br))
+		l.ignore()
+		l.emit(itemNewLine)
 	}
 }
 
@@ -315,10 +296,14 @@ func lexAtxHeader(l *lexer) stateFn {
 	var typ itemType
 	n := l.acceptRun("#") // Find which level of header this is
 	if l.peek() != ' ' {
-		return lexNewParagraph
+		l.acceptUntilNewLine()
+		lexTextNewLine(l)
+		return lexText
 	}
-	l.ignoreNext(1)
+	l.acceptRun(" ")
 	switch n { // Map to item type
+	case 0:
+		typ = itemError
 	case 1:
 		typ = itemH1
 	case 2:
@@ -330,9 +315,7 @@ func lexAtxHeader(l *lexer) stateFn {
 	case 5:
 		typ = itemH5
 	case 6:
-		typ = itemH6
-	case 0:
-		typ = itemError
+		fallthrough
 	default:
 		typ = itemH6
 	}
@@ -340,28 +323,32 @@ func lexAtxHeader(l *lexer) stateFn {
 		return l.errorf("Expected \"#\" at start of ATX header") // Send error & exit
 	}
 	l.ignore()
-	l.acceptRun(inlineChars)
 	l.emit(typ)
-	if hp(l.input[l.pos:], br) {
-		l.ignoreNext(len(br))
-	} else {
-		return l.errorf("Expected newline at end of ATX header")
+	return lexText
+}
+
+func lexHr(l *lexer) stateFn {
+	hrChar := l.input[l.pos:l.pos+1] // '-' or '*'
+	for !hp(l.input[l.pos:], br) {
+		if !l.accept(hrChar) {
+			l.ignore()
+			return lexUl
+		}
+		l.acceptRun(" ")		
 	}
-	return lexBlock
+	l.nextNTimes(len(br))
+	l.ignore()
+	l.emit(itemHr)
+	return lexText
 }
 
 func lexUl(l *lexer) stateFn {
-	fmt.Println(string(l.next()))
-	if l.peek() != ' ' {
-		return lexNewParagraph
-	}
-	for !hp(l.input[l.pos:], br) && l.peek() != eof {
-		l.next()
-	}
 	l.emit(itemUl)
-	l.nextNTimes(len(br))
-	l.ignore()
-	return lexBlock
+	return lexText
+}
+
+func lexOl(l *lexer) stateFn {
+	return nil
 }
 // ============================================================ //
 // ======================= END STATES ========================= //
