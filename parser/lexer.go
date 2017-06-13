@@ -70,7 +70,7 @@ func (i item) String() string {
 		return fmt.Sprintf("Text: %q", i.val)
 	case i.typ == itemUl:
 		return "UL Item: " + i.val
-	case i.typ >= itemH1 && i.typ < itemH6:
+	case i.typ >= itemH1 && i.typ <= itemH6:
 		return fmt.Sprintf("Header H%v", i.typ-itemH1+1)
 		// case len(i.val) > 10:
 		// 	return fmt.Sprintf("%.10q...", i.val)
@@ -314,8 +314,6 @@ func lexAtxHeader(l *lexer) stateFn {
 		typ = itemH4
 	case 5:
 		typ = itemH5
-	case 6:
-		fallthrough
 	default:
 		typ = itemH6
 	}

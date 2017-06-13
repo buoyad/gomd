@@ -10,3 +10,16 @@ will come out exactly like we want it
 Markdown comes with many benefits:
 * It's easy to read in raw form
 * It's simple & intuitive to write
+
+header 1
+========
+
+header 2
+========
+
+# header 1
+## header 2
+### header 3
+#### header 4
+##### header 5
+###### header 6
